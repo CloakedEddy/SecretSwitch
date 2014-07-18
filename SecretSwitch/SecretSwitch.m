@@ -9,6 +9,9 @@
 #import "SecretSwitch.h"
 #import <Accelerate/Accelerate.h>
 
+#import "UIImage+Manipulation.h"
+#import "UIView+Screenshot.h"
+
 @interface SecretSwitch ()
 
 + (void)applicationWillResignActive;
@@ -20,19 +23,18 @@
 
 static UIImageView *imageView;
 static CGFloat blurFactor = 5;
-static NSInteger resolutionFactor = 4;
 
-#define PI 3.1415
+#define PI 3.141592653589793238462643383279
 
 + (void)protectSecret
 {
   if (imageView == nil) {
     imageView = [[UIImageView alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
-    [imageView.layer setBorderWidth:1.f];
-    [imageView.layer setBorderColor:[UIColor whiteColor].CGColor];
+    [imageView.layer setBorderWidth:2.f];
     [imageView.layer setMasksToBounds:YES];
     [imageView setContentMode:UIViewContentModeScaleToFill];
   }
+	
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(applicationWillResignActive)
                                                name:UIApplicationWillResignActiveNotification
@@ -45,81 +47,17 @@ static NSInteger resolutionFactor = 4;
 
 + (void)applicationWillResignActive
 {
-  UIWindow *window = [[UIApplication sharedApplication] keyWindow];
-  UIView *view = [window.subviews lastObject];
-  
-  UIGraphicsBeginImageContextWithOptions(CGSizeMake(view.bounds.size.width/resolutionFactor, view.bounds.size.height/resolutionFactor), NO, 0);
-  
-  [view drawViewHierarchyInRect:CGRectMake(view.bounds.origin.x,
-                                           view.bounds.origin.y,
-                                           view.bounds.size.width/resolutionFactor,
-                                           view.bounds.size.height/resolutionFactor)
-             afterScreenUpdates:NO];
-  
-  UIImage *copied = UIGraphicsGetImageFromCurrentImageContext();
-  UIGraphicsEndImageContext();
-  
-  
-  //boxsize must be an odd integer
-  uint32_t boxSize = (uint32_t)(blurFactor * copied.scale);
-  if (boxSize % 2 == 0)
-    boxSize ++;
-  
-  //create image buffers
-  CGImageRef imageRef = copied.CGImage;
-  vImage_Buffer buffer1, buffer2;
-  buffer1.width = buffer2.width = CGImageGetWidth(imageRef);
-  buffer1.height = buffer2.height = CGImageGetHeight(imageRef);
-  buffer1.rowBytes = buffer2.rowBytes = CGImageGetBytesPerRow(imageRef);
-  size_t bytes = buffer1.rowBytes * buffer1.height;
-  buffer1.data = malloc(bytes);
-  buffer2.data = malloc(bytes);
-  
-  //create temp buffer
-  void *tempBuffer = malloc((size_t)vImageBoxConvolve_ARGB8888(&buffer1, &buffer2, NULL, 0, 0, boxSize, boxSize,
-                                                               NULL, kvImageEdgeExtend + kvImageGetTempBufferSize));
-  
-  //copy image data
-  CFDataRef dataSource = CGDataProviderCopyData(CGImageGetDataProvider(imageRef));
-  memcpy(buffer1.data, CFDataGetBytePtr(dataSource), bytes);
-  CFRelease(dataSource);
-  
-  for (NSUInteger i = 0; i < 1; i++) {
-    //perform blur
-    vImageBoxConvolve_ARGB8888(&buffer1, &buffer2, tempBuffer, 0, 0, boxSize, boxSize, NULL, kvImageEdgeExtend);
-    
-    //swap buffers
-    void *temp = buffer1.data;
-    buffer1.data = buffer2.data;
-    buffer2.data = temp;
-  }
-  
-  //free buffers
-  free(buffer2.data);
-  free(tempBuffer);
-  
-  //create image context from buffer
-  CGContextRef ctx = CGBitmapContextCreate(buffer1.data, buffer1.width, buffer1.height,
-                                           8, buffer1.rowBytes, CGImageGetColorSpace(imageRef),
-                                           CGImageGetBitmapInfo(imageRef));
-  
-  //apply tint
-  //  if (tintColor && CGColorGetAlpha(tintColor.CGColor) > 0.0f)
-  //  {
-  //    CGContextSetFillColorWithColor(ctx, [tintColor colorWithAlphaComponent:0.25].CGColor);
-  //    CGContextSetBlendMode(ctx, kCGBlendModePlusLighter);
-  //    CGContextFillRect(ctx, CGRectMake(0, 0, buffer1.width, buffer1.height));
-  //  }
-  
-  //create image from context
-  imageRef = CGBitmapContextCreateImage(ctx);
-  UIImage *image = [UIImage imageWithCGImage:imageRef
-                                       scale:copied.scale
-                                 orientation:copied.imageOrientation];
-  CGImageRelease(imageRef);
-  CGContextRelease(ctx);
-  free(buffer1.data);
-  
+  UIWindow *window = [[UIApplication sharedApplication].delegate window];
+  UIView *view = window.rootViewController.view;
+	UIImage *image = [view screenshot];
+	
+	if (window.rootViewController.presentedViewController) {
+		UIImage* modal = [window.rootViewController.presentedViewController.view screenshot];
+		image = [UIImage combineRoot:image modal:modal];
+	}
+	
+	image = [image blurWithFactor:blurFactor];
+	
   CGRect fullScreenRect = [UIScreen mainScreen].bounds;
   /// Calculate bounds based on orientation.
   UIInterfaceOrientation orientation = [UIApplication sharedApplication].statusBarOrientation;
@@ -132,8 +70,10 @@ static NSInteger resolutionFactor = 4;
   }
 
   [imageView setImage:image];
+	imageView.backgroundColor = [UIColor purpleColor];
   imageView.transform = CGAffineTransformIdentity;
   imageView.frame = fullScreenRect;
+	NSLog(@"imageView has frame %@",NSStringFromCGRect(imageView.frame));
   
   if (orientation == UIInterfaceOrientationLandscapeRight) {
       imageView.transform = CGAffineTransformConcat(imageView.transform, CGAffineTransformMakeRotation(PI / 2));
@@ -144,33 +84,23 @@ static NSInteger resolutionFactor = 4;
   } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
       imageView.transform = CGAffineTransformConcat(imageView.transform, CGAffineTransformMakeRotation(PI));
   }
-  
-  [imageView setAlpha:1.f];
+
   [window addSubview:imageView];
+	NSLog(@"Added overlay.");
 }
 
 + (void)applicationDidBecomeActive
 {
-  [UIView animateWithDuration:0.3f
-                   animations:^{
-                     [imageView setAlpha:0.f];
-                   } completion:^(BOOL finished) {
-                     if (finished) {
-                       [imageView removeFromSuperview];
-                     }
-                   }];
+	[imageView removeFromSuperview];
+	NSLog(@"Removed overlay.");
+	imageView.image = nil;
 }
 
 #pragma mark - Properties
 
 + (void)setBlurFactor:(CGFloat)factor {
-  factor = MIN(100, MAX(1, factor));
+  factor = MIN(32, MAX(1, factor));
   blurFactor = factor;
-}
-
-+ (void)setResolutionFactor:(NSInteger)factor {
-  factor = MIN(8, MAX(1, factor));
-  resolutionFactor = factor;
 }
 
 @end
